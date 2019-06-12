@@ -1,0 +1,377 @@
+
+Anime recommemdation system
+
+#########Objective
+this project aims at designing an agorism for recommending aimie to existig users according to their past record
+
+#########Reference
+https://www.kaggle.com/ajmichelutti/collaborative-filtering-on-anime-data
+https://www.jianshu.com/p/1e45b93bd593
+https://blog.csdn.net/yinyu19950811/article/details/85697227
+
+#########Data
+https://www.kaggle.com/CooperUnion/anime-recommendations-database
+Customer Need
+
+#########The aimie to be feed:
+    want and need - related and interested (fruits)
+    want but does not need - interested but unrelated(fries)
+    need but does not want - related but uninterested(luck)
+
+########Users click recommendation anime when they :
+    visit for no specific target but to explore
+    visit for a search/ specific video but sidetract by the recommendation
+
+########Interested video: find by watching history Related video: find by association according to watching history of all users( if watch A, then will watch B)
+
+########Train-test split Randomly, 0.3 test, 0.7 train,
+
+########Evaluation Part
+match recommendation with user watched, compare if the actual rating for the watched and recommened video for validation set is higher than mean / within +— 1 SD of the users mean rating
+good recommendation --> 1 poor recommendation --> 0
+    K-fold validation -F score
+    accuracy
+    AUC / F1-score /ROC
+
+########refer: https://www.imooc.com/article/27344?block_id=tuijian_wz
+########The data:
+####anime.csv
+anime_id - myanimelist.net's unique id identifying an anime.
+name - full name of anime.
+genre - comma separated list of genres for this anime.[dummy]
+type - movie, TV, OVA, etc.[Dummy binanry]
+episodes - how many episodes in this show. (1 if movie).[discrete]
+rating - average rating out of 10 for this anime.[continous]
+members - number of community members that are in this anime's "group".[discrete]
+
+####Rating.csv
+user_id - non identifiable randomly generated user id.
+anime_id - the anime that this user has rated.
+rating - rating out of 10 this user has assigned (-1 if the user watched it but didn't assign a rating).
+
+########Coding
+#####Import Packages:
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import sklearn
+import scipy as sp
+import copy
+import random
+import itertools
+import collections
+%matplotlib inline
+
+#####Import data file:
+raw_anime = pd.read_csv("https://media.githubusercontent.com/media/96ian/data/master/anime.csv")
+raw_anime.head()
+raw_anime.shape
+
+raw_rating = pd.read_csv("https://media.githubusercontent.com/media/96ian/data/master/rating.csv")
+raw_rating[raw_rating.user_id == 3].head()
+
+#####Data Preprocessing
+#Data Cleaning
+#Step 1: Detect missing value:
+arr = raw_rating['anime_id'].unique()   #find unique anime id in rating
+anime =raw_anime[raw_anime["anime_id"].isin(arr)] 
+anime.tail()
+
+anime.isnull().sum()
+anime=anime.dropna()
+
+#Step 2: Select the KNOWN subset and drop UNKNOWN part
+#drop UNKNOWN data
+anime = anime.replace('Unknown',np.nan)
+anime = anime.dropna()
+anime.head(5)
+
+#Step 3: Change the type of episodes from object to integer
+anime['episodes']=anime['episodes'].astype('int64')
+
+#Step 4: Show the information of final dataset
+anime.shape
+anime.describe()
+anime.info()
+anime.sort_values(['members','rating'],ascending=False).head(5)
+
+#####Data Visualization
+#there are some interesting patterns:
+sns.pairplot(data=anime[['type','members','episodes','rating']],hue='type')
+
+#show the relationship between rating and number of members
+plt.figure(figsize=(10,6))
+sns.jointplot(x='rating', y='members', data=anime, s=10,color='orange')
+
+#most animes have less than 200 thousand members and those who have more than 200 thousand tend to have higher ratings
+sns.lmplot(x='rating',y='members',data=anime,hue='type')
+
+#show the relationship between episodes and rating
+plt.figure(figsize=(10,6))
+sns.scatterplot(x='rating', y='episodes', data=anime, s=10, hue='type')
+plt.title("Rating of Each Episode")
+
+#show the distribution of different types
+sns.countplot(x='type',data=anime,palette='viridis')
+plt.title('Distribution of Different Types')
+#the database consist mainly on TV and OVA animes.
+
+##show the rating of different types
+sns.boxplot(data=anime,x='type',y='rating')
+plt.title('Rating of Each Type')
+
+#Count anime by genre
+anime['genre'] = anime['genre'].apply(lambda x:x.split(',')) # split genre into list of individual genre
+genre_data = itertools.chain(*anime['genre'].values.tolist()) # flatten the list
+genre_counter = collections.Counter(genre_data)
+genres = pd.DataFrame.from_dict(genre_counter, orient='index').reset_index().rename(columns={'index':'genre', 0:'count'})
+genres.sort_values('count', ascending=False, inplace=True)
+
+# Plot genre
+f, ax = plt.subplots(figsize=(8, 12))
+sns.set_color_codes("pastel")
+sns.set_style("white")
+sns.barplot(x="count", y="genre", data=genres, color='b')
+ax.set(ylabel='Genre',xlabel="Anime Count")
+plt.title('Count of Each Genre')
+#the five most popular genres are Comedy, Action, Adventure, Fantasy and Sci-Fi.
+
+#show the heatmap of all genre
+def mapper(anime,col):
+  if col in anime:
+        return 1
+  elif col not in anime:
+        return 0
+genre_collections =pd.DataFrame([],columns=genre_counter.keys())
+for col in genre_collections:
+    genre_collections[col] = anime['genre'].apply(mapper,args=(col,))
+sns.heatmap(genre_collections.corr())
+plt.title('Heatmap of Genre')
+
+#show the distribution of rating
+sns.distplot(anime['rating'])
+plt.title('Distribution of Rating')
+#distribution of rating is almost normal and centered on 7
+
+#####Model Building
+#Step 1 Assumptions
+ass_anime = 3000  #考虑1000部电影
+ass_popular = 3 #一部电影被多少人看过才会考虑
+ass_R  = 0.1 #两部anime 的关系系数
+ass_N  = 2 #N_layers 最大值
+ass_Q_score = 2 #Quality >= 
+ass_view_count_lmt = 200 #一部anime最少多少观看次数我们才研究
+ass_adj_lift = 0.00001
+ass_no_user = 100  #观测多少个用户
+ass_fix_lift = 1 #随机组命中0个test,lift设定为固定值
+
+#Step 2 Compute Quality Score
+#add view_count
+view_df = raw_rating['anime_id'].value_counts().to_frame('view_count') #convert view count from rating chart
+merge_df = pd.merge(anime,view_df,how='inner',left_on = 'anime_id',right_index = True)
+#sns.distplot(view_df.view_count)  # check the distribution of the view_count
+
+#add rating% = 1 - 看了没投票/view count = rating%
+unrated_watch_df = raw_rating[(raw_rating.rating == -1)]['anime_id'].value_counts().to_frame('unrated_watch')
+merge_df_1 = pd.merge(merge_df,unrated_watch_df,how='inner',left_on = 'anime_id',right_index = True)
+
+#get_rating%
+merge_df_1.head()
+merge_df_1['rate%'] = 1-(merge_df_1['unrated_watch']/merge_df_1['view_count'])
+
+#get_average rate
+av_rate_df = raw_rating[raw_rating.rating >= 0].groupby(['anime_id']).mean()['rating'].to_frame('av_rate')
+merge_df_0 = pd.merge(merge_df_1,av_rate_df,how='inner',left_on = 'anime_id',right_on = 'anime_id')
+merge_df_0.head()
+
+#filter anyway anime with low view count
+merge_df_2 = merge_df_0[merge_df_0.view_count > ass_view_count_lmt]
+merge_df_2.head()
+
+# Add a Q_score column to dataframe which implys summation of three binary scores from 'view count', 'rate%', 'av_rate'
+merge_df_2['Q_score'] = (((merge_df_2['view_count'] >=merge_df_2['view_count'].mean())*1)
+                                    +((merge_df_2['rate%']        >=merge_df_2['rate%'].mean())*1)
+                                    +((merge_df_2['av_rate']      >=merge_df_2['av_rate'].mean())*1))
+merge_df_2.head()
+
+# select columns 'anime_id' and 'Q_score' as new dataframe, filtered out the video with Q score lower than ass_Q_score
+anime_Q= merge_df_2[['anime_id','Q_score']].copy()
+anime_high_Q = anime_Q[anime_Q.Q_score>=ass_Q_score]
+anime_high_Q.head()
+
+#Step3 Get "liked anime"
+#Anime where users rate above users' average rating score
+#Even rating = -1 can be a 'liked anime' as users might not rate any anime he watched.
+#We recommond videos base on merely his view history in this case
+
+highQ = anime_high_Q['anime_id'].unique().tolist()
+#video Q>=2 & avg. rating > user av. rating
+
+df_hist = pd.DataFrame()
+for userID in range(1,ass_no_user):#raw_rating['user_id'].unique():
+  df_L = raw_rating[(raw_rating.user_id == userID)& (raw_rating.anime_id < ass_anime)] #assumption!
+  df_L = df_L[df_L["anime_id"].isin(highQ)]
+  df_L = df_L[df_L.anime_id <= ass_anime]
+  df_hist = df_hist.append(df_L)
+df_hist.head()  #video Q>=2 & avg. rating > user av. rating
+
+#Step4 Get "Seed Bag", & split_train&test
+#the video users watched with above average rating
+def split(mother):
+  random.shuffle(mother)
+  train = mother[:len(mother)//2]
+  test  = [x for x in mother if x not in train]
+  return train,test
+
+##Step 4 Creat "seed video bag",with train&test set re-run will give different random output
+seed =pd.DataFrame(columns = ["user_id","seed_bag"])
+dic_hist_v2 ={}
+for userID in df_hist.user_id.unique().tolist():
+  key_userID = userID
+  valueID = df_hist[(df_hist.user_id ==userID)]['anime_id'].tolist()
+  dic_hist_v2[userID] = valueID,split(valueID)[0],split(valueID)[1]
+  seed = pd.DataFrame.from_dict(dic_hist_v2, orient='index',columns=['seed_bag','seed_train','seed_test'])
+  seed['user_id'] = seed.index
+seed.head()
+
+#Step5 Get "R score"
+#who watched a video and give good rating
+
+pool = []
+for i in seed['user_id'].unique().tolist():
+  add =[x for x in seed[seed.user_id == i]['seed_train'] if x not in pool][0]
+  pool = pool+add
+pool[:10]  #all video unique in training set
+
+#illustrate the userid of ppl who watched a certain video
+dic_hist_v3 ={}
+for video in pool:
+  index = video
+  value = [[userid for userid in seed['user_id'].unique().tolist() if video in seed[seed.user_id==userid]['seed_train'].tolist()[0]]]
+  dic_hist_v3[index] = value
+
+say = pd.DataFrame.from_dict(dic_hist_v3, orient='index',columns=['user_watched'])
+say['anime_id'] = say.index
+say.head()
+
+def R_score(Vi,Vj,dic_hist): #dic_hist: a DF with video no. and a list of users who watched a video and give good rating
+    Ci = len(dic_hist[dic_hist.anime_id == Vi]['user_watched'].tolist()[0])
+    Cj = len(dic_hist[dic_hist.anime_id == Vj]['user_watched'].tolist()[0])
+    common_users = []
+    for users in dic_hist[dic_hist.anime_id == Vi]['user_watched'].tolist()[0]:
+      if users in dic_hist[dic_hist.anime_id == Vj]['user_watched'].tolist()[0]:
+        common_users.append(users)
+    Cij = len(common_users)
+    score = Cij / (Ci * Cj)
+    return score
+
+R_matrix = pd.DataFrame(columns = ['Vi','Vj','R_score'])
+for Vi in say.anime_id.unique().tolist():
+  for Vj in say.anime_id.unique().tolist():
+    if Vi == Vj:
+      continue
+    elif R_score(Vi,Vj,say)> ass_R:  #这里是R 的分数筛选
+      R_matrix = R_matrix.append(pd.Series([Vi,Vj,R_score(Vi,Vj,say)],index =['Vi','Vj','R_score']),ignore_index =True)#
+      print('[log]',Vi,Vj,R_score(Vi,Vj,say))
+R_matrix
+
+#Step6 Get "N layer" value，NSR,ANS
+#Vi - Vj --> Nij = 1
+#Vi - Vj - Vk --> Nik = 2
+
+def get_N_matrix(userid,seed,N=ass_N):    #N=ass_N
+  grandma = [] 
+  seed_list = seed[seed.user_id == userid]['seed_train'].tolist()[0]
+  
+  for S in seed_list: 
+    recom = R_matrix[R_matrix.Vi == S]['Vj'].tolist()
+    for r in [ x for x in recom if x not in seed_list]:
+      grandma.append([S,int(r)])
+      
+  for each in grandma:
+    if len(each) <= int(N): 
+      recom = R_matrix[R_matrix.Vi == each[-1]]['Vj'].tolist()
+      recom = [int(x) for x in recom]
+      for recom_item in [x for x in recom if x not in seed_list+each] :
+        grandma.append(each+[recom_item])
+  N_df = pd.DataFrame(columns=['user_id','R','S','N'])
+
+  for i in grandma:
+    N_df.loc[N_df.shape[0]+1] = [userid,i[-1],i[0],len(i)-1]
+  Final_df = pd.DataFrame(columns=['user_id','R','NSR','ANS'])  
+  
+  for i in N_df['R'].unique().tolist():
+    NSR = len(N_df[(N_df.R== i) &(N_df.user_id == userid )]['S'].unique().tolist())
+    ANS =N_df[(N_df.R== i) &(N_df.user_id ==userid )]['N'].mean()
+    Final_df.loc[Final_df.shape[0]+1] = [userid,i,NSR,ANS]
+
+  Final_df.sort_values(by=['NSR'],ascending = False)
+  return Final_df
+  
+df = get_N_matrix(3,seed,2)
+df.sort_values(by=['NSR'],ascending = False)
+
+#Step7 Evaluation
+#bold text
+    split -- training & test
+    get a random Video list
+    random --> test VS. recom --> test, size keep the same
+    metrix --> Average N score or accurate rate
+    
+def get_lift(userid,seed,N):
+  recom_list = get_N_matrix(userid,seed,N)['R'].tolist() #recom
+  test_list = seed[seed.user_id == userid]['seed_test'].tolist()[0]
+  random_list = random.choices([x for x in range(1,ass_anime) if x not in seed[seed.user_id == 1]['seed_train'].tolist()[0]],k = len(recom_list))
+
+  rand_len = len([x for x in random_list if x in test_list])
+  recom_len = len([y for y in recom_list if y in test_list])
+  lift = (recom_len -rand_len)/(rand_len + 0.0001)
+  
+  print('[log_userID]',userid)
+  
+  if lift >=  10000: 
+    print('[log_info  ]none hit by random,hit by recom is:',recom_len)
+    return recom_len 
+
+  elif lift == 0:
+    print('[log_info]both random & recom miss any test, no improvement :',0)
+    return 0
+  else:
+    print('[log_info]%improvement of recom over random: ',lift)
+    return lift
+
+get_lift(1,seed,1)
+
+#Step 8
+def av_lift(user_amount,N):
+  lift_list =[]
+  for user in random.choices(seed['user_id'].unique().tolist(),k=user_amount):
+    lift = get_lift(user,seed,N)
+    lift_list.append(lift)
+  lift_np = np.array(lift_list, dtype=np.float32)
+  print('the lifts list are:')
+  print(lift_np)
+  lift_av = np.mean(lift_np,dtype = float)
+  print('average lift for %s users with N layers limited to %s is:'%(user_amount,N))
+
+  return lift_av
+
+av_lift(3,1)
+
+i_range = [1,5,10,20,50,100]
+N_range = [1,2]
+
+eva_df = pd.DataFrame(columns= ['user_amount','N_layers','Av.Lift'])
+
+for i in i_range:
+  for N in N_range:
+    print('                     [!!!!!!!!!!!!!Operation_Log:%s users %s layer!!!!!!!!!!!!!!]               '%(i,N))
+    av_lift(i,N)
+    print(i,N,av_lift)
+    #eva_df.loc[eva_df.shape[0]+1] = [i,N,av_lift]
+    
+eva_df
+
+av_lift(80,1)
+
