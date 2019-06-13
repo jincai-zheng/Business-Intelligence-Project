@@ -87,7 +87,7 @@ h.	By counting, the five most popular genres are found: Comedy, Action, Adventur
 After preparation and preprocessing, a recommendation was built per the following logic:
  
 The details for each part will be explained: 
-![](C:/Users/75228/Desktop/1.png)
+![](https://github.com/jincai-zheng/Business-Intelligence-Project/blob/master/1.png)
 
 ### 2.4 Q score
 Based on our goal of recommendation, the recommended videos are supposed to be of high quality. Q score is regarded as a more objective measurement to filter out the videos below the threshold. Q score is defined as the composition of three parts:
@@ -166,9 +166,11 @@ Third, an alternative approach can be introduced for evaluating performances but
 
 A metrics, average N score (ANS), is introduced measuring the strength of association between the recommendation video and the seed video. For Recommendation R1, can be recommended via the following route:
 
-S1- R2-R3-R1   	   --> layer / N score = 3
-S2 – R2 -R1	       --> layer / N score = 2
-S3 – R2- R5-R6-R1  --> layer / N score = 4
+| Seed   |   To     |   ANS   |
+|----    |:--------:|--------:|
+|S1- R2-R3-R1   	  |  -->| layer / N score = 3|
+|S2 – R2 -R1	      | --> |layer / N score = 2|
+|S3 – R2- R5-R6-R1 |-->  |layer / N score = 4|
 
 An N score of 3 indicating that it take 3 steps for R1 to relate to the seed video. The average N score of R1 would be calculated: (3+2+4)/ 3 = 3. Noticed that the lower the N score, the more associated the recommendation videos are with the seed videos(the video watched and liked by the a user).
 The ANS of all the recommendation video for a user can be calculated, averaged, and denoted as ANS-Recom. A random set of videos with same size as the recommendation can be created and the corresponding ANS for each random videos can be calculated. Taking the average all the ANS value of the random set, we have ANS-Random. If ANS-Recom is smaller than ANS-random, we affirmed that the recommendation is of videos more associated with the seed bag and, thus, are improving the performance. 
